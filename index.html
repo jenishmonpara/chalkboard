@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Happy Birthday Fanny! 🎂</title>
+    <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600;700&family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Sacramento&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Cafe-style header -->
+    <header class="cafe-header">
+        <div class="header-ornament left">✦</div>
+        <div class="header-content">
+            <p class="header-sub">~ a little something from everyone who loves you ~</p>
+            <h1 class="header-title">Happy Birthday, Fanny!</h1>
+            <p class="header-tagline">leave a message, doodle, or pin a photo on the board below</p>
+        </div>
+        <div class="header-ornament right">✦</div>
+    </header>
+
+    <!-- Toolbar -->
+    <div class="toolbar" id="toolbar">
+        <div class="tool-group">
+            <button class="tool-btn active" data-tool="draw" title="Draw">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
+            </button>
+            <button class="tool-btn" data-tool="text" title="Add Text">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/></svg>
+            </button>
+            <button class="tool-btn" data-tool="eraser" title="Eraser">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 20H7L3 16l9-9 8 8-4 4z"/><path d="M6.5 13.5l5-5"/></svg>
+            </button>
+            <button class="tool-btn" data-tool="photo" title="Pin Photo">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+            </button>
+        </div>
+        <div class="tool-group colors" id="colorPalette">
+            <button class="color-btn active" data-color="#FFFFFF" style="background:#FFFFFF" title="White"></button>
+            <button class="color-btn" data-color="#FFD700" style="background:#FFD700" title="Gold"></button>
+            <button class="color-btn" data-color="#FF6B9D" style="background:#FF6B9D" title="Pink"></button>
+            <button class="color-btn" data-color="#87CEEB" style="background:#87CEEB" title="Sky Blue"></button>
+            <button class="color-btn" data-color="#98FB98" style="background:#98FB98" title="Mint"></button>
+            <button class="color-btn" data-color="#FFB347" style="background:#FFB347" title="Peach"></button>
+            <button class="color-btn" data-color="#DDA0DD" style="background:#DDA0DD" title="Plum"></button>
+            <button class="color-btn" data-color="#F0E68C" style="background:#F0E68C" title="Khaki"></button>
+        </div>
+        <div class="tool-group">
+            <label class="size-label" title="Brush Size">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>
+                <input type="range" id="brushSize" min="1" max="20" value="3" class="size-slider">
+            </label>
+        </div>
+        <div class="tool-group">
+            <button class="tool-btn" id="zoomIn" title="Zoom In">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/><path d="M8 11h6"/><path d="M11 8v6"/></svg>
+            </button>
+            <button class="tool-btn" id="zoomOut" title="Zoom Out">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/><path d="M8 11h6"/></svg>
+            </button>
+            <button class="tool-btn" id="panBtn" data-tool="pan" title="Pan / Move">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 9l-3 3 3 3"/><path d="M9 5l3-3 3 3"/><path d="M15 19l-3 3-3-3"/><path d="M19 9l3 3-3 3"/><path d="M2 12h20"/><path d="M12 2v20"/></svg>
+            </button>
+        </div>
+        <div class="tool-group">
+            <button class="tool-btn" id="undoBtn" title="Undo">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 00-9-9 9 9 0 00-6 2.3L3 13"/></svg>
+            </button>
+            <button class="tool-btn danger" id="clearBtn" title="Clear All">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+            </button>
+        </div>
+    </div>
+
+    <!-- Chalkboard -->
+    <div class="board-container" id="boardContainer">
+        <div class="board-frame">
+            <div class="board" id="board">
+                <canvas id="chalkCanvas"></canvas>
+                <div class="elements-layer" id="elementsLayer"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Text input modal -->
+    <div class="modal-overlay" id="textModal">
+        <div class="modal">
+            <h3>Write a message</h3>
+            <textarea id="textInput" placeholder="Write your birthday message here..." rows="3"></textarea>
+            <div class="modal-colors" id="modalColors"></div>
+            <div class="modal-actions">
+                <button class="modal-btn cancel" id="textCancel">Cancel</button>
+                <button class="modal-btn confirm" id="textConfirm">Add to Board</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden file input -->
+    <input type="file" id="photoInput" accept="image/*" style="display:none">
+
+    <!-- Footer -->
+    <footer class="cafe-footer">
+        <p>made with love ♥ for Fanny's birthday</p>
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+</html>
