@@ -19,13 +19,11 @@
 body {
     font-family: 'Caveat', cursive;
     background-color: var(--cafe-dark);
-    background-image:
-        radial-gradient(ellipse at 20% 50%, rgba(139, 105, 20, 0.08) 0%, transparent 50%),
-        radial-gradient(ellipse at 80% 50%, rgba(139, 105, 20, 0.05) 0%, transparent 50%),
-        url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.02'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
-    min-height: 100vh;
     color: var(--cream);
-    overflow-x: hidden;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
 
 /* Cafe Header */
@@ -194,60 +192,39 @@ body {
     cursor: pointer;
 }
 
-/* Board */
+/* Board - Infinite Canvas */
 .board-container {
-    display: flex;
-    justify-content: center;
-    padding: 16px;
     flex: 1;
     overflow: hidden;
     touch-action: none;
-}
-
-.board-frame {
-    border: 8px solid var(--frame-brown);
-    border-image: linear-gradient(135deg, #8b6914, #5c3a1e, #3e2010, #5c3a1e, #8b6914) 1;
-    box-shadow:
-        0 4px 20px rgba(0, 0, 0, 0.5),
-        inset 0 0 30px rgba(0, 0, 0, 0.3);
-    position: relative;
-    max-width: 100%;
-}
-
-.board {
-    width: 1200px;
-    height: 800px;
-    background: var(--board-green);
-    background-image:
-        radial-gradient(ellipse at 30% 30%, rgba(60, 80, 60, 0.5) 0%, transparent 60%),
-        radial-gradient(ellipse at 70% 70%, rgba(40, 60, 40, 0.3) 0%, transparent 60%),
-        url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100' height='100' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
     position: relative;
     cursor: crosshair;
-    overflow: hidden;
-    transform-origin: 0 0;
 }
 
 #chalkCanvas {
-    width: 100%;
-    height: 100%;
     position: absolute;
     top: 0;
     left: 0;
+    width: 100%;
+    height: 100%;
 }
 
 .elements-layer {
     position: absolute;
     top: 0;
     left: 0;
-    width: 100%;
-    height: 100%;
+    width: 0;
+    height: 0;
+    overflow: visible;
     pointer-events: none;
 }
 
 /* Text elements on board */
 .board-text {
     position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: 0 0;
     font-family: 'Caveat', cursive;
     cursor: move;
     pointer-events: auto;
@@ -292,10 +269,12 @@ body {
 /* Photo elements on board */
 .board-photo {
     position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: 0 0;
     cursor: move;
     pointer-events: auto;
     user-select: none;
-    transform: rotate(var(--rotation, 0deg));
     filter: drop-shadow(0 4px 8px rgba(0,0,0,0.4));
     transition: outline 0.2s;
     outline: 3px solid transparent;
@@ -483,11 +462,7 @@ body {
     }
 
     .board-container {
-        padding: 8px;
-    }
-
-    .board-frame {
-        border-width: 5px;
+        padding: 0;
     }
 }
 
@@ -499,11 +474,6 @@ body {
     .size-slider {
         width: 40px;
     }
-}
-
-/* Chalk texture effect on canvas */
-.board canvas {
-    image-rendering: auto;
 }
 
 /* Pinch zoom hint */
