@@ -39,6 +39,10 @@ const boardContainer = document.getElementById('boardContainer');
 const canvas = document.getElementById('chalkCanvas');
 const ctx = canvas.getContext('2d');
 const elementsLayer = document.getElementById('elementsLayer');
+
+// Offscreen canvas for strokes (so eraser works correctly)
+const strokeCanvas = document.createElement('canvas');
+const sctx = strokeCanvas.getContext('2d');
 const textModal = document.getElementById('textModal');
 const textInput = document.getElementById('textInput');
 const photoInput = document.getElementById('photoInput');
@@ -52,6 +56,10 @@ function resizeCanvas() {
     canvas.style.width = rect.width + 'px';
     canvas.style.height = rect.height + 'px';
     ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+    // Match offscreen canvas size
+    strokeCanvas.width = canvas.width;
+    strokeCanvas.height = canvas.height;
+    sctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
     needsRedraw = true;
 }
 
@@ -113,51 +121,50 @@ function drawBackground() {
     }
 }
 
-// Draw a chalk line in world coords, transformed to screen
-function drawChalkLineWorld(x1, y1, x2, y2, color, size) {
-    // Transform world to screen
+// Draw a chalk line on a given context, in world coords transformed to screen
+function drawChalkLineOn(target, x1, y1, x2, y2, color, size) {
     const s1 = worldToScreen(x1, y1);
     const s2 = worldToScreen(x2, y2);
     const scaledSize = size * scale;
 
-    ctx.strokeStyle = color;
-    ctx.lineWidth = scaledSize;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.globalAlpha = 0.85;
-    ctx.beginPath();
-    ctx.moveTo(s1.x, s1.y);
-    ctx.lineTo(s2.x, s2.y);
-    ctx.stroke();
+    target.strokeStyle = color;
+    target.lineWidth = scaledSize;
+    target.lineCap = 'round';
+    target.lineJoin = 'round';
+    target.globalAlpha = 0.85;
+    target.beginPath();
+    target.moveTo(s1.x, s1.y);
+    target.lineTo(s2.x, s2.y);
+    target.stroke();
 
     // chalk dust effect
     const dist = Math.sqrt((s2.x - s1.x) ** 2 + (s2.y - s1.y) ** 2);
     const dots = Math.floor(dist / 3);
-    ctx.globalAlpha = 0.3;
-    ctx.fillStyle = color;
+    target.globalAlpha = 0.3;
+    target.fillStyle = color;
     for (let i = 0; i < dots; i++) {
         const t = Math.random();
         const px = s1.x + (s2.x - s1.x) * t + (Math.random() - 0.5) * scaledSize * 1.5;
         const py = s1.y + (s2.y - s1.y) * t + (Math.random() - 0.5) * scaledSize * 1.5;
-        ctx.fillRect(px, py, Math.random() * 1.5 + 0.5, Math.random() * 1.5 + 0.5);
+        target.fillRect(px, py, Math.random() * 1.5 + 0.5, Math.random() * 1.5 + 0.5);
     }
-    ctx.globalAlpha = 1;
+    target.globalAlpha = 1;
 }
 
-// Eraser in world coords
-function eraseLineWorld(x1, y1, x2, y2, size) {
+// Erase on a given context, in world coords
+function eraseLineOn(target, x1, y1, x2, y2, size) {
     const s1 = worldToScreen(x1, y1);
     const s2 = worldToScreen(x2, y2);
     const scaledSize = size * 3 * scale;
 
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.lineWidth = scaledSize;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(s1.x, s1.y);
-    ctx.lineTo(s2.x, s2.y);
-    ctx.stroke();
-    ctx.globalCompositeOperation = 'source-over';
+    target.globalCompositeOperation = 'destination-out';
+    target.lineWidth = scaledSize;
+    target.lineCap = 'round';
+    target.beginPath();
+    target.moveTo(s1.x, s1.y);
+    target.lineTo(s2.x, s2.y);
+    target.stroke();
+    target.globalCompositeOperation = 'source-over';
 }
 
 // Check if a stroke's bounding box is visible
@@ -180,8 +187,12 @@ function redrawCanvas() {
     const w = rect.width;
     const h = rect.height;
 
+    // Draw background on main canvas
     ctx.clearRect(0, 0, w, h);
     drawBackground();
+
+    // Draw all strokes on offscreen canvas (so eraser works via destination-out)
+    sctx.clearRect(0, 0, w, h);
 
     // Visible world bounds
     const viewLeft = camX;
@@ -189,20 +200,25 @@ function redrawCanvas() {
     const viewRight = camX + w / scale;
     const viewBottom = camY + h / scale;
 
-    // Draw strokes (only visible ones)
     drawingHistory.forEach(stroke => {
         if (stroke.type === 'line' && isStrokeVisible(stroke, viewLeft, viewTop, viewRight, viewBottom)) {
             for (let i = 1; i < stroke.points.length; i++) {
                 const p1 = stroke.points[i - 1];
                 const p2 = stroke.points[i];
                 if (stroke.eraser) {
-                    eraseLineWorld(p1.x, p1.y, p2.x, p2.y, stroke.size);
+                    eraseLineOn(sctx, p1.x, p1.y, p2.x, p2.y, stroke.size);
                 } else {
-                    drawChalkLineWorld(p1.x, p1.y, p2.x, p2.y, stroke.color, stroke.size);
+                    drawChalkLineOn(sctx, p1.x, p1.y, p2.x, p2.y, stroke.color, stroke.size);
                 }
             }
         }
     });
+
+    // Composite strokes onto main canvas
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(strokeCanvas, 0, 0);
+    ctx.restore();
 
     needsRedraw = false;
 }
@@ -296,17 +312,6 @@ function addTextElement(text, wx, wy, color, fontSize, id) {
     el.dataset.worldX = wx;
     el.dataset.worldY = wy;
 
-    const deleteBtn = document.createElement('button');
-    deleteBtn.className = 'delete-btn';
-    deleteBtn.textContent = '\u00d7';
-    deleteBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        el.remove();
-        elements = elements.filter(e => e.id !== id);
-        saveState();
-    });
-    el.appendChild(deleteBtn);
-
     el.addEventListener('mousedown', startDragElement);
     el.addEventListener('touchstart', startDragElementTouch, { passive: false });
 
@@ -335,19 +340,8 @@ function addPhotoElement(src, wx, wy, rotation, id) {
     img.src = src;
     img.draggable = false;
 
-    const deleteBtn = document.createElement('button');
-    deleteBtn.className = 'delete-btn';
-    deleteBtn.textContent = '\u00d7';
-    deleteBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        el.remove();
-        elements = elements.filter(e => e.id !== id);
-        saveState();
-    });
-
     el.appendChild(pin);
     el.appendChild(img);
-    el.appendChild(deleteBtn);
 
     el.addEventListener('mousedown', startDragElement);
     el.addEventListener('touchstart', startDragElementTouch, { passive: false });
@@ -478,11 +472,12 @@ canvas.addEventListener('mousemove', (e) => {
     const world = screenToWorld(e.clientX, e.clientY);
 
     if (currentTool === 'eraser') {
-        // Draw eraser stroke immediately for feedback
-        eraseLineWorld(lastWorldX, lastWorldY, world.x, world.y, brushSize);
+        eraseLineOn(sctx, lastWorldX, lastWorldY, world.x, world.y, brushSize);
     } else {
-        drawChalkLineWorld(lastWorldX, lastWorldY, world.x, world.y, currentColor, brushSize);
+        drawChalkLineOn(sctx, lastWorldX, lastWorldY, world.x, world.y, currentColor, brushSize);
     }
+    // Composite live stroke onto main canvas
+    needsRedraw = true;
     currentStroke.points.push({ x: world.x, y: world.y });
     lastWorldX = world.x;
     lastWorldY = world.y;
@@ -602,10 +597,11 @@ canvas.addEventListener('touchmove', (e) => {
     e.preventDefault();
     const world = screenToWorld(e.touches[0].clientX, e.touches[0].clientY);
     if (currentTool === 'eraser') {
-        eraseLineWorld(lastWorldX, lastWorldY, world.x, world.y, brushSize);
+        eraseLineOn(sctx, lastWorldX, lastWorldY, world.x, world.y, brushSize);
     } else {
-        drawChalkLineWorld(lastWorldX, lastWorldY, world.x, world.y, currentColor, brushSize);
+        drawChalkLineOn(sctx, lastWorldX, lastWorldY, world.x, world.y, currentColor, brushSize);
     }
+    needsRedraw = true;
     currentStroke.points.push({ x: world.x, y: world.y });
     lastWorldX = world.x;
     lastWorldY = world.y;

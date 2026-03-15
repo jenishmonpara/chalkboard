@@ -243,28 +243,6 @@ body {
     outline: 2px dashed rgba(255, 255, 255, 0.3);
 }
 
-.board-text .delete-btn {
-    position: absolute;
-    top: -12px;
-    right: -12px;
-    width: 22px;
-    height: 22px;
-    background: #ff4444;
-    color: white;
-    border: none;
-    border-radius: 50%;
-    font-size: 12px;
-    cursor: pointer;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    line-height: 1;
-    z-index: 10;
-}
-
-.board-text:hover .delete-btn {
-    display: flex;
-}
 
 /* Photo elements on board */
 .board-photo {
@@ -306,28 +284,6 @@ body {
     z-index: 2;
 }
 
-.board-photo .delete-btn {
-    position: absolute;
-    top: -12px;
-    right: -12px;
-    width: 22px;
-    height: 22px;
-    background: #ff4444;
-    color: white;
-    border: none;
-    border-radius: 50%;
-    font-size: 12px;
-    cursor: pointer;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    line-height: 1;
-    z-index: 10;
-}
-
-.board-photo:hover .delete-btn {
-    display: flex;
-}
 
 /* Modal */
 .modal-overlay {
