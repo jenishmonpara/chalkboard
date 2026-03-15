@@ -8,13 +8,13 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <!-- Cafe-style header -->
+    <!-- Header -->
     <header class="cafe-header">
         <div class="header-ornament left">✦</div>
         <div class="header-content">
             <p class="header-sub">~ a little something from everyone who loves you ~</p>
             <h1 class="header-title">Happy Birthday, Fanny!</h1>
-            <p class="header-tagline">leave a message, doodle, or pin a photo on the board below</p>
+            <p class="header-tagline">leave a message, doodle, or stick a sticker on the board below</p>
         </div>
         <div class="header-ornament right">✦</div>
     </header>
@@ -22,7 +22,7 @@
     <!-- Toolbar -->
     <div class="toolbar" id="toolbar">
         <div class="tool-group">
-            <button class="tool-btn active" data-tool="draw" title="Draw">
+            <button class="tool-btn active" data-tool="draw" title="Marker">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
             </button>
             <button class="tool-btn" data-tool="text" title="Add Text">
@@ -31,19 +31,22 @@
             <button class="tool-btn" data-tool="eraser" title="Eraser">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 20H7L3 16l9-9 8 8-4 4z"/><path d="M6.5 13.5l5-5"/></svg>
             </button>
+            <button class="tool-btn" data-tool="sticker" title="Stickers">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+            </button>
             <button class="tool-btn" data-tool="photo" title="Pin Photo">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
             </button>
         </div>
         <div class="tool-group colors" id="colorPalette">
-            <button class="color-btn active" data-color="#FFFFFF" style="background:#FFFFFF" title="White"></button>
-            <button class="color-btn" data-color="#FFD700" style="background:#FFD700" title="Gold"></button>
-            <button class="color-btn" data-color="#FF6B9D" style="background:#FF6B9D" title="Pink"></button>
-            <button class="color-btn" data-color="#87CEEB" style="background:#87CEEB" title="Sky Blue"></button>
-            <button class="color-btn" data-color="#98FB98" style="background:#98FB98" title="Mint"></button>
-            <button class="color-btn" data-color="#FFB347" style="background:#FFB347" title="Peach"></button>
-            <button class="color-btn" data-color="#DDA0DD" style="background:#DDA0DD" title="Plum"></button>
-            <button class="color-btn" data-color="#F0E68C" style="background:#F0E68C" title="Khaki"></button>
+            <button class="color-btn active" data-color="#222222" style="background:#222222" title="Black"></button>
+            <button class="color-btn" data-color="#e74c3c" style="background:#e74c3c" title="Red"></button>
+            <button class="color-btn" data-color="#2980b9" style="background:#2980b9" title="Blue"></button>
+            <button class="color-btn" data-color="#27ae60" style="background:#27ae60" title="Green"></button>
+            <button class="color-btn" data-color="#8e44ad" style="background:#8e44ad" title="Purple"></button>
+            <button class="color-btn" data-color="#e67e22" style="background:#e67e22" title="Orange"></button>
+            <button class="color-btn" data-color="#e91e8c" style="background:#e91e8c" title="Pink"></button>
+            <button class="color-btn" data-color="#16a085" style="background:#16a085" title="Teal"></button>
         </div>
         <div class="tool-group">
             <label class="size-label" title="Brush Size">
@@ -75,10 +78,19 @@
         </div>
     </div>
 
-    <!-- Infinite Chalkboard -->
+    <!-- Infinite Whiteboard -->
     <div class="board-container" id="boardContainer">
         <canvas id="chalkCanvas"></canvas>
         <div class="elements-layer" id="elementsLayer"></div>
+    </div>
+
+    <!-- Sticker Picker -->
+    <div class="sticker-picker" id="stickerPicker">
+        <div class="sticker-picker-header">
+            <input type="text" id="stickerSearch" placeholder="Search stickers...">
+        </div>
+        <div class="sticker-tabs" id="stickerTabs"></div>
+        <div class="sticker-grid" id="stickerGrid"></div>
     </div>
 
     <!-- Text input modal -->
