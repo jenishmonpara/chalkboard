@@ -542,8 +542,21 @@ function addStickerElement(emoji, wx, wy, id, elScale) {
 // ============================================
 // Element dragging
 // ============================================
+function eraseElement(el) {
+    const id = el.dataset.id;
+    elements = elements.filter(e => e.id !== id);
+    el.remove();
+    saveState();
+}
+
 function startDragElement(e) {
-    if (currentTool === 'draw' || currentTool === 'eraser') return;
+    if (currentTool === 'eraser') {
+        e.preventDefault();
+        e.stopPropagation();
+        eraseElement(e.currentTarget);
+        return;
+    }
+    if (currentTool === 'draw') return;
     // Don't start drag if resize handle was clicked
     if (e.target.classList.contains('resize-handle')) return;
     e.preventDefault();
@@ -558,7 +571,13 @@ function startDragElement(e) {
 }
 
 function startDragElementTouch(e) {
-    if (currentTool === 'draw' || currentTool === 'eraser') return;
+    if (currentTool === 'eraser') {
+        e.preventDefault();
+        e.stopPropagation();
+        eraseElement(e.currentTarget);
+        return;
+    }
+    if (currentTool === 'draw') return;
     if (e.target.classList.contains('resize-handle')) return;
     if (e.touches.length !== 1) return;
     e.preventDefault();
