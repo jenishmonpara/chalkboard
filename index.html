@@ -109,11 +109,17 @@
     <!-- Hidden file input -->
     <input type="file" id="photoInput" accept="image/*" style="display:none">
 
+    <!-- Sync status indicator -->
+    <div id="syncStatus" class="sync-status">Local only</div>
+
     <!-- Footer -->
     <footer class="cafe-footer">
         <p>made with love ♥ for Fanny's birthday</p>
     </footer>
 
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+    <script src="firebase-config.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

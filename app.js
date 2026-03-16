@@ -78,6 +78,120 @@ try {
     };
 } catch (ex) { /* BroadcastChannel not supported */ }
 
+// Firebase real-time sync
+let firebaseDb = null;
+let firebaseReady = false;
+let suppressFirebaseSync = false;
+
+function initFirebase() {
+    if (typeof FIREBASE_CONFIG === 'undefined' || !FIREBASE_CONFIG.databaseURL) {
+        console.info('Firebase not configured — running in local-only mode. Edit firebase-config.js to enable sync.');
+        return;
+    }
+    try {
+        const app = firebase.initializeApp(FIREBASE_CONFIG);
+        firebaseDb = firebase.database();
+        firebaseReady = true;
+        console.info('Firebase connected — real-time sync enabled!');
+        const statusEl = document.getElementById('syncStatus');
+        if (statusEl) {
+            statusEl.textContent = 'Synced';
+            statusEl.classList.add('connected');
+        }
+
+        // Listen for remote changes
+        const boardRef = firebaseDb.ref('board');
+
+        // Strokes
+        firebaseDb.ref('board/strokes').on('value', (snap) => {
+            if (suppressFirebaseSync) return;
+            const data = snap.val();
+            const remoteStrokes = data ? Object.values(data) : [];
+            // Merge: keep strokes we don't have
+            const localIds = new Set(drawingHistory.map(s => s.id));
+            let changed = false;
+            remoteStrokes.forEach(s => {
+                if (!localIds.has(s.id)) {
+                    drawingHistory.push(s);
+                    changed = true;
+                }
+            });
+            // Remove strokes that were deleted remotely
+            const remoteIds = new Set(remoteStrokes.map(s => s.id));
+            const before = drawingHistory.length;
+            drawingHistory = drawingHistory.filter(s => remoteIds.has(s.id));
+            if (drawingHistory.length !== before) changed = true;
+
+            if (changed) {
+                viewportDirty = true;
+                compositeDirty = true;
+                localStorage.setItem('chalkboard_state', JSON.stringify(buildState()));
+            }
+        });
+
+        // Elements
+        firebaseDb.ref('board/elements').on('value', (snap) => {
+            if (suppressFirebaseSync) return;
+            const data = snap.val();
+            const remoteElements = data ? Object.values(data) : [];
+            const localIds = new Set(elements.map(e => e.id));
+            const remoteIds = new Set(remoteElements.map(e => e.id));
+            let changed = false;
+
+            // Add new remote elements
+            remoteElements.forEach(el => {
+                if (!localIds.has(el.id)) {
+                    if (el.type === 'text') {
+                        addTextElement(el.text, el.x, el.y, el.color, el.fontSize, el.id, el.elScale);
+                    } else if (el.type === 'photo') {
+                        addPhotoElement(el.src, el.x, el.y, el.rotation, el.id, el.elScale);
+                    } else if (el.type === 'sticker') {
+                        addStickerElement(el.sticker, el.x, el.y, el.id, el.elScale);
+                    }
+                    changed = true;
+                }
+            });
+
+            // Remove elements deleted remotely
+            const toRemove = elements.filter(e => !remoteIds.has(e.id));
+            toRemove.forEach(e => {
+                const domEl = document.querySelector(`[data-id="${e.id}"]`);
+                if (domEl) domEl.remove();
+            });
+            if (toRemove.length > 0) {
+                elements = elements.filter(e => remoteIds.has(e.id));
+                changed = true;
+            }
+
+            if (changed) {
+                localStorage.setItem('chalkboard_state', JSON.stringify(buildState()));
+            }
+        });
+    } catch (e) {
+        console.warn('Firebase init failed:', e);
+    }
+}
+
+function firebaseSave() {
+    if (!firebaseReady) return;
+    suppressFirebaseSync = true;
+    const state = buildState();
+    const strokesObj = {};
+    state.strokes.forEach(s => { strokesObj[s.id] = s; });
+    const elementsObj = {};
+    state.elements.forEach(e => { elementsObj[e.id] = e; });
+
+    Promise.all([
+        firebaseDb.ref('board/strokes').set(strokesObj),
+        firebaseDb.ref('board/elements').set(elementsObj)
+    ]).then(() => {
+        setTimeout(() => { suppressFirebaseSync = false; }, 500);
+    }).catch(err => {
+        console.warn('Firebase save error:', err);
+        suppressFirebaseSync = false;
+    });
+}
+
 // ============================================
 // Sticker Data
 // ============================================
@@ -321,6 +435,7 @@ function _doSave() {
         if (broadcastChannel) {
             broadcastChannel.postMessage({ type: 'state_update', state });
         }
+        firebaseSave();
     } catch (e) {
         console.warn('Could not save state:', e);
     }
@@ -351,7 +466,7 @@ function loadState() {
 }
 
 function loadStateFromData(state) {
-    drawingHistory = state.strokes || [];
+    drawingHistory = (state.strokes || []).map(s => s.id ? s : { ...s, id: genId() });
     if (state.cam) {
         camX = state.cam.x;
         camY = state.cam.y;
@@ -663,6 +778,7 @@ canvas.addEventListener('mousedown', (e) => {
     lastWorldX = world.x;
     lastWorldY = world.y;
     currentStroke = {
+        id: genId(),
         type: 'line',
         color: currentColor,
         size: brushSize,
@@ -775,6 +891,7 @@ canvas.addEventListener('touchstart', (e) => {
     lastWorldY = world.y;
     isDrawing = true;
     currentStroke = {
+        id: genId(),
         type: 'line', color: currentColor, size: brushSize,
         eraser: currentTool === 'eraser',
         points: [{ x: world.x, y: world.y }]
@@ -1126,6 +1243,7 @@ document.getElementById('homeBtn').addEventListener('click', () => {
 resizeCanvas();
 loadState();
 initStickerPicker();
+initFirebase();
 if (!localStorage.getItem('chalkboard_state')) {
     const rect = canvas.getBoundingClientRect();
     camX = -rect.width / 2;

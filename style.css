@@ -611,3 +611,21 @@ body {
 .zoom-hint.visible {
     opacity: 1;
 }
+
+.sync-status {
+    position: fixed;
+    bottom: 40px;
+    right: 12px;
+    background: rgba(0,0,0,0.6);
+    color: #fff;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    z-index: 200;
+    pointer-events: none;
+    transition: background 0.3s;
+}
+
+.sync-status.connected {
+    background: rgba(39, 174, 96, 0.8);
+}
