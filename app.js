@@ -1,13 +1,14 @@
 // ============================================
-// Infinite Whiteboard with Marker Effect
+// Infinite Whiteboard - Optimized Rendering
+// 3-layer canvas: background + committed + live
 // ============================================
 
-// Camera / viewport
+// Camera
 let camX = 0;
 let camY = 0;
 let scale = 1;
 
-// State
+// Drawing state
 let currentTool = 'draw';
 let currentColor = '#222222';
 let brushSize = 3;
@@ -21,18 +22,31 @@ let panStartCamX = 0;
 let panStartCamY = 0;
 let drawingHistory = [];
 let currentStroke = null;
+
+// Element state
 let elements = [];
 let dragTarget = null;
 let dragOffsetX = 0;
 let dragOffsetY = 0;
+let resizeTarget = null;
+let resizeStartDist = 0;
+let resizeStartScale = 0;
+let resizeAnchorWorld = null;
 let textColor = '#222222';
+
+// Pinch zoom
 let pinchStartDist = 0;
 let pinchStartScale = 1;
 let lastPinchCenter = null;
 let pinchStartCamX = 0;
 let pinchStartCamY = 0;
-let needsRedraw = true;
+
+// Render state
+let viewportDirty = true;   // need to rebuild committed canvas from history
+let compositeDirty = true;  // need to recomposite layers to screen
 let animFrameId = null;
+
+// Sticker placement
 let stickerPlaceMode = false;
 let selectedSticker = null;
 
@@ -41,16 +55,31 @@ const boardContainer = document.getElementById('boardContainer');
 const canvas = document.getElementById('chalkCanvas');
 const ctx = canvas.getContext('2d');
 const elementsLayer = document.getElementById('elementsLayer');
-const strokeCanvas = document.createElement('canvas');
-const sctx = strokeCanvas.getContext('2d');
 const textModal = document.getElementById('textModal');
 const textInput = document.getElementById('textInput');
 const photoInput = document.getElementById('photoInput');
 const brushSizeInput = document.getElementById('brushSize');
 const stickerPicker = document.getElementById('stickerPicker');
 
+// Offscreen canvases
+const committedCanvas = document.createElement('canvas');
+const cctx = committedCanvas.getContext('2d');
+const liveCanvas = document.createElement('canvas');
+const lctx = liveCanvas.getContext('2d');
+
+// Multi-user sync
+let broadcastChannel = null;
+try {
+    broadcastChannel = new BroadcastChannel('whiteboard_sync');
+    broadcastChannel.onmessage = (e) => {
+        if (e.data.type === 'state_update') {
+            loadStateFromData(e.data.state);
+        }
+    };
+} catch (ex) { /* BroadcastChannel not supported */ }
+
 // ============================================
-// Sticker Data - 100 stickers organized by category
+// Sticker Data
 // ============================================
 const STICKER_CATEGORIES = {
     'Birthday': ['🎂', '🎉', '🎈', '🎁', '🎊', '🥳', '🎀', '🕯️', '🍰', '🧁', '🎇', '🎆', '🪅', '🎏', '🎐'],
@@ -67,15 +96,28 @@ const STICKER_CATEGORIES = {
 // ============================================
 function resizeCanvas() {
     const rect = boardContainer.getBoundingClientRect();
-    canvas.width = rect.width * window.devicePixelRatio;
-    canvas.height = rect.height * window.devicePixelRatio;
-    canvas.style.width = rect.width + 'px';
-    canvas.style.height = rect.height + 'px';
-    ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
-    strokeCanvas.width = canvas.width;
-    strokeCanvas.height = canvas.height;
-    sctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
-    needsRedraw = true;
+    const dpr = window.devicePixelRatio;
+    const w = rect.width;
+    const h = rect.height;
+    const pw = w * dpr;
+    const ph = h * dpr;
+
+    canvas.width = pw;
+    canvas.height = ph;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    committedCanvas.width = pw;
+    committedCanvas.height = ph;
+    cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    liveCanvas.width = pw;
+    liveCanvas.height = ph;
+    lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    viewportDirty = true;
+    compositeDirty = true;
 }
 
 function screenToWorld(sx, sy) {
@@ -94,25 +136,24 @@ function worldToScreen(wx, wy) {
 }
 
 // ============================================
-// Whiteboard background
+// Background
 // ============================================
 function drawBackground() {
     const rect = canvas.getBoundingClientRect();
     const w = rect.width;
     const h = rect.height;
 
-    // Clean white background
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, w, h);
 
-    // Subtle dot grid
+    // Dot grid
     ctx.fillStyle = 'rgba(0, 0, 0, 0.06)';
     const gridSize = 40 * scale;
     if (gridSize > 4) {
-        const startX = -(camX * scale % gridSize);
-        const startY = -(camY * scale % gridSize);
-        for (let x = startX; x < w; x += gridSize) {
-            for (let y = startY; y < h; y += gridSize) {
+        const offX = ((-camX * scale) % gridSize + gridSize) % gridSize;
+        const offY = ((-camY * scale) % gridSize + gridSize) % gridSize;
+        for (let x = offX; x < w; x += gridSize) {
+            for (let y = offY; y < h; y += gridSize) {
                 ctx.beginPath();
                 ctx.arc(x, y, 0.8, 0, Math.PI * 2);
                 ctx.fill();
@@ -122,63 +163,43 @@ function drawBackground() {
 }
 
 // ============================================
-// Marker-style drawing
+// Marker drawing on a target context
 // ============================================
-function drawMarkerLineOn(target, x1, y1, x2, y2, color, size) {
+function drawMarkerSegment(target, x1, y1, x2, y2, color, size) {
     const s1 = worldToScreen(x1, y1);
     const s2 = worldToScreen(x2, y2);
-    const scaledSize = size * scale;
+    const sz = size * scale;
 
-    // Marker effect: semi-transparent with slight edge variation
     target.lineCap = 'round';
     target.lineJoin = 'round';
 
-    // Main marker stroke - slightly transparent like a real marker
+    // Main stroke
     target.strokeStyle = color;
-    target.lineWidth = scaledSize;
+    target.lineWidth = sz;
     target.globalAlpha = 0.6;
     target.beginPath();
     target.moveTo(s1.x, s1.y);
     target.lineTo(s2.x, s2.y);
     target.stroke();
 
-    // Darker center line for marker "ink pooling" effect
-    target.lineWidth = scaledSize * 0.4;
+    // Darker center
+    target.lineWidth = sz * 0.4;
     target.globalAlpha = 0.3;
     target.beginPath();
     target.moveTo(s1.x, s1.y);
     target.lineTo(s2.x, s2.y);
     target.stroke();
 
-    // Subtle edge streaks for marker texture
-    const dist = Math.sqrt((s2.x - s1.x) ** 2 + (s2.y - s1.y) ** 2);
-    if (dist > 1) {
-        const angle = Math.atan2(s2.y - s1.y, s2.x - s1.x);
-        const perpX = Math.sin(angle);
-        const perpY = -Math.cos(angle);
-
-        target.globalAlpha = 0.08;
-        target.lineWidth = 0.5;
-        const streaks = Math.min(Math.floor(scaledSize / 2), 5);
-        for (let i = 0; i < streaks; i++) {
-            const offset = (i / streaks - 0.5) * scaledSize * 0.9;
-            target.beginPath();
-            target.moveTo(s1.x + perpX * offset, s1.y + perpY * offset);
-            target.lineTo(s2.x + perpX * offset, s2.y + perpY * offset);
-            target.stroke();
-        }
-    }
-
     target.globalAlpha = 1;
 }
 
-function eraseLineOn(target, x1, y1, x2, y2, size) {
+function eraseSegment(target, x1, y1, x2, y2, size) {
     const s1 = worldToScreen(x1, y1);
     const s2 = worldToScreen(x2, y2);
-    const scaledSize = size * 3 * scale;
+    const sz = size * 3 * scale;
 
     target.globalCompositeOperation = 'destination-out';
-    target.lineWidth = scaledSize;
+    target.lineWidth = sz;
     target.lineCap = 'round';
     target.beginPath();
     target.moveTo(s1.x, s1.y);
@@ -188,9 +209,9 @@ function eraseLineOn(target, x1, y1, x2, y2, size) {
 }
 
 // ============================================
-// Visibility & rendering
+// Visibility culling
 // ============================================
-function isStrokeVisible(stroke, viewLeft, viewTop, viewRight, viewBottom) {
+function isStrokeVisible(stroke, vl, vt, vr, vb) {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const p of stroke.points) {
         if (p.x < minX) minX = p.x;
@@ -198,12 +219,42 @@ function isStrokeVisible(stroke, viewLeft, viewTop, viewRight, viewBottom) {
         if (p.x > maxX) maxX = p.x;
         if (p.y > maxY) maxY = p.y;
     }
-    const pad = stroke.size * 2;
-    return maxX + pad >= viewLeft && minX - pad <= viewRight &&
-           maxY + pad >= viewTop && minY - pad <= viewBottom;
+    const pad = stroke.size * 4;
+    return maxX + pad >= vl && minX - pad <= vr && maxY + pad >= vt && minY - pad <= vb;
 }
 
-function redrawCanvas() {
+// ============================================
+// Rebuild committed canvas from history
+// ============================================
+function rebuildCommitted() {
+    const rect = canvas.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+    cctx.clearRect(0, 0, w, h);
+
+    const vl = camX, vt = camY;
+    const vr = camX + w / scale;
+    const vb = camY + h / scale;
+
+    for (const stroke of drawingHistory) {
+        if (stroke.type !== 'line' || !isStrokeVisible(stroke, vl, vt, vr, vb)) continue;
+        for (let i = 1; i < stroke.points.length; i++) {
+            const p1 = stroke.points[i - 1];
+            const p2 = stroke.points[i];
+            if (stroke.eraser) {
+                eraseSegment(cctx, p1.x, p1.y, p2.x, p2.y, stroke.size);
+            } else {
+                drawMarkerSegment(cctx, p1.x, p1.y, p2.x, p2.y, stroke.color, stroke.size);
+            }
+        }
+    }
+    viewportDirty = false;
+}
+
+// ============================================
+// Composite to screen: bg + committed + live
+// ============================================
+function compositeToScreen() {
     const rect = canvas.getBoundingClientRect();
     const w = rect.width;
     const h = rect.height;
@@ -211,43 +262,35 @@ function redrawCanvas() {
     ctx.clearRect(0, 0, w, h);
     drawBackground();
 
-    sctx.clearRect(0, 0, w, h);
-
-    const viewLeft = camX;
-    const viewTop = camY;
-    const viewRight = camX + w / scale;
-    const viewBottom = camY + h / scale;
-
-    drawingHistory.forEach(stroke => {
-        if (stroke.type === 'line' && isStrokeVisible(stroke, viewLeft, viewTop, viewRight, viewBottom)) {
-            for (let i = 1; i < stroke.points.length; i++) {
-                const p1 = stroke.points[i - 1];
-                const p2 = stroke.points[i];
-                if (stroke.eraser) {
-                    eraseLineOn(sctx, p1.x, p1.y, p2.x, p2.y, stroke.size);
-                } else {
-                    drawMarkerLineOn(sctx, p1.x, p1.y, p2.x, p2.y, stroke.color, stroke.size);
-                }
-            }
-        }
-    });
-
+    // Draw committed strokes
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.drawImage(strokeCanvas, 0, 0);
+    ctx.drawImage(committedCanvas, 0, 0);
+    // Draw live stroke on top
+    ctx.drawImage(liveCanvas, 0, 0);
     ctx.restore();
 
-    needsRedraw = false;
+    compositeDirty = false;
 }
 
+// ============================================
+// Render loop
+// ============================================
 function renderLoop() {
-    if (needsRedraw) {
-        redrawCanvas();
+    if (viewportDirty) {
+        rebuildCommitted();
+        compositeDirty = true;
+    }
+    if (compositeDirty) {
+        compositeToScreen();
     }
     updateElementPositions();
     animFrameId = requestAnimationFrame(renderLoop);
 }
 
+// ============================================
+// Element positioning
+// ============================================
 function updateElementPositions() {
     const els = elementsLayer.children;
     for (let i = 0; i < els.length; i++) {
@@ -255,63 +298,79 @@ function updateElementPositions() {
         const wx = parseFloat(el.dataset.worldX);
         const wy = parseFloat(el.dataset.worldY);
         const s = worldToScreen(wx, wy);
-        const rot = el.dataset.rotation || 0;
-        el.style.transform = `translate(${s.x}px, ${s.y}px) scale(${scale}) rotate(${rot}deg)`;
+        const rot = parseFloat(el.dataset.rotation) || 0;
+        const elScale = parseFloat(el.dataset.elScale) || 1;
+        el.style.transform = `translate(${s.x}px, ${s.y}px) scale(${scale * elScale}) rotate(${rot}deg)`;
     }
 }
 
 // ============================================
 // State persistence
 // ============================================
+let saveTimeout = null;
 function saveState() {
+    // Debounce saves to avoid lag during rapid actions
+    clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(_doSave, 300);
+}
+
+function _doSave() {
     try {
-        const state = {
-            strokes: drawingHistory,
-            elements: elements.map(el => ({
-                id: el.id,
-                type: el.type,
-                x: el.x,
-                y: el.y,
-                color: el.color,
-                text: el.text,
-                fontSize: el.fontSize,
-                src: el.src,
-                rotation: el.rotation,
-                sticker: el.sticker
-            })),
-            cam: { x: camX, y: camY, scale }
-        };
+        const state = buildState();
         localStorage.setItem('chalkboard_state', JSON.stringify(state));
+        if (broadcastChannel) {
+            broadcastChannel.postMessage({ type: 'state_update', state });
+        }
     } catch (e) {
         console.warn('Could not save state:', e);
     }
+}
+
+function buildState() {
+    return {
+        strokes: drawingHistory,
+        elements: elements.map(el => ({
+            id: el.id, type: el.type, x: el.x, y: el.y,
+            color: el.color, text: el.text, fontSize: el.fontSize,
+            src: el.src, rotation: el.rotation, sticker: el.sticker,
+            elScale: el.elScale
+        })),
+        cam: { x: camX, y: camY, scale }
+    };
 }
 
 function loadState() {
     try {
         const saved = localStorage.getItem('chalkboard_state');
         if (saved) {
-            const state = JSON.parse(saved);
-            drawingHistory = state.strokes || [];
-            if (state.cam) {
-                camX = state.cam.x;
-                camY = state.cam.y;
-                scale = state.cam.scale || 1;
-            }
-            (state.elements || []).forEach(el => {
-                if (el.type === 'text') {
-                    addTextElement(el.text, el.x, el.y, el.color, el.fontSize, el.id);
-                } else if (el.type === 'photo') {
-                    addPhotoElement(el.src, el.x, el.y, el.rotation, el.id);
-                } else if (el.type === 'sticker') {
-                    addStickerElement(el.sticker, el.x, el.y, el.id);
-                }
-            });
-            needsRedraw = true;
+            loadStateFromData(JSON.parse(saved));
         }
     } catch (e) {
         console.warn('Could not load state:', e);
     }
+}
+
+function loadStateFromData(state) {
+    drawingHistory = state.strokes || [];
+    if (state.cam) {
+        camX = state.cam.x;
+        camY = state.cam.y;
+        scale = state.cam.scale || 1;
+    }
+    // Clear existing DOM elements
+    elementsLayer.innerHTML = '';
+    elements = [];
+    (state.elements || []).forEach(el => {
+        if (el.type === 'text') {
+            addTextElement(el.text, el.x, el.y, el.color, el.fontSize, el.id, el.elScale);
+        } else if (el.type === 'photo') {
+            addPhotoElement(el.src, el.x, el.y, el.rotation, el.id, el.elScale);
+        } else if (el.type === 'sticker') {
+            addStickerElement(el.sticker, el.x, el.y, el.id, el.elScale);
+        }
+    });
+    viewportDirty = true;
+    compositeDirty = true;
 }
 
 function genId() {
@@ -319,10 +378,91 @@ function genId() {
 }
 
 // ============================================
+// Resize handle creation
+// ============================================
+function createResizeHandle(parentEl) {
+    const handle = document.createElement('div');
+    handle.className = 'resize-handle';
+    handle.addEventListener('mousedown', startResize);
+    handle.addEventListener('touchstart', startResizeTouch, { passive: false });
+    parentEl.appendChild(handle);
+    return handle;
+}
+
+function startResize(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const el = e.currentTarget.parentElement;
+    resizeTarget = el;
+    const world = screenToWorld(e.clientX, e.clientY);
+    const wx = parseFloat(el.dataset.worldX);
+    const wy = parseFloat(el.dataset.worldY);
+    resizeAnchorWorld = { x: wx, y: wy };
+    resizeStartDist = Math.hypot(world.x - wx, world.y - wy);
+    resizeStartScale = parseFloat(el.dataset.elScale) || 1;
+    document.addEventListener('mousemove', onResize);
+    document.addEventListener('mouseup', endResize);
+}
+
+function startResizeTouch(e) {
+    if (e.touches.length !== 1) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const touch = e.touches[0];
+    const el = e.currentTarget.parentElement;
+    resizeTarget = el;
+    const world = screenToWorld(touch.clientX, touch.clientY);
+    const wx = parseFloat(el.dataset.worldX);
+    const wy = parseFloat(el.dataset.worldY);
+    resizeAnchorWorld = { x: wx, y: wy };
+    resizeStartDist = Math.hypot(world.x - wx, world.y - wy);
+    resizeStartScale = parseFloat(el.dataset.elScale) || 1;
+    document.addEventListener('touchmove', onResizeTouch, { passive: false });
+    document.addEventListener('touchend', endResizeTouch);
+}
+
+function onResize(e) {
+    if (!resizeTarget) return;
+    const world = screenToWorld(e.clientX, e.clientY);
+    const dist = Math.hypot(world.x - resizeAnchorWorld.x, world.y - resizeAnchorWorld.y);
+    const ratio = dist / Math.max(resizeStartDist, 1);
+    resizeTarget.dataset.elScale = Math.max(0.2, Math.min(5, resizeStartScale * ratio));
+}
+
+function onResizeTouch(e) {
+    if (!resizeTarget) return;
+    e.preventDefault();
+    const touch = e.touches[0];
+    const world = screenToWorld(touch.clientX, touch.clientY);
+    const dist = Math.hypot(world.x - resizeAnchorWorld.x, world.y - resizeAnchorWorld.y);
+    const ratio = dist / Math.max(resizeStartDist, 1);
+    resizeTarget.dataset.elScale = Math.max(0.2, Math.min(5, resizeStartScale * ratio));
+}
+
+function endResize() {
+    if (resizeTarget) {
+        updateElementData(resizeTarget);
+        resizeTarget = null;
+    }
+    document.removeEventListener('mousemove', onResize);
+    document.removeEventListener('mouseup', endResize);
+}
+
+function endResizeTouch() {
+    if (resizeTarget) {
+        updateElementData(resizeTarget);
+        resizeTarget = null;
+    }
+    document.removeEventListener('touchmove', onResizeTouch);
+    document.removeEventListener('touchend', endResizeTouch);
+}
+
+// ============================================
 // Element creation
 // ============================================
-function addTextElement(text, wx, wy, color, fontSize, id) {
+function addTextElement(text, wx, wy, color, fontSize, id, elScale) {
     id = id || genId();
+    elScale = elScale || 1;
     const el = document.createElement('div');
     el.className = 'board-text';
     el.style.color = color || '#222222';
@@ -331,6 +471,7 @@ function addTextElement(text, wx, wy, color, fontSize, id) {
     el.dataset.id = id;
     el.dataset.worldX = wx;
     el.dataset.worldY = wy;
+    el.dataset.elScale = elScale;
 
     el.addEventListener('mousedown', startDragElement);
     el.addEventListener('touchstart', startDragElementTouch, { passive: false });
@@ -338,19 +479,21 @@ function addTextElement(text, wx, wy, color, fontSize, id) {
     elementsLayer.appendChild(el);
 
     if (!elements.find(e => e.id === id)) {
-        elements.push({ id, type: 'text', x: wx, y: wy, color: color || '#222222', text, fontSize: fontSize || 24 });
+        elements.push({ id, type: 'text', x: wx, y: wy, color: color || '#222222', text, fontSize: fontSize || 24, elScale });
     }
 }
 
-function addPhotoElement(src, wx, wy, rotation, id) {
+function addPhotoElement(src, wx, wy, rotation, id, elScale) {
     id = id || genId();
     rotation = rotation || (Math.random() * 10 - 5);
+    elScale = elScale || 1;
     const el = document.createElement('div');
     el.className = 'board-photo';
     el.dataset.id = id;
     el.dataset.worldX = wx;
     el.dataset.worldY = wy;
     el.dataset.rotation = rotation;
+    el.dataset.elScale = elScale;
 
     const pin = document.createElement('div');
     pin.className = 'pin';
@@ -361,6 +504,7 @@ function addPhotoElement(src, wx, wy, rotation, id) {
 
     el.appendChild(pin);
     el.appendChild(img);
+    createResizeHandle(el);
 
     el.addEventListener('mousedown', startDragElement);
     el.addEventListener('touchstart', startDragElementTouch, { passive: false });
@@ -368,18 +512,22 @@ function addPhotoElement(src, wx, wy, rotation, id) {
     elementsLayer.appendChild(el);
 
     if (!elements.find(e => e.id === id)) {
-        elements.push({ id, type: 'photo', x: wx, y: wy, src, rotation });
+        elements.push({ id, type: 'photo', x: wx, y: wy, src, rotation, elScale });
     }
 }
 
-function addStickerElement(emoji, wx, wy, id) {
+function addStickerElement(emoji, wx, wy, id, elScale) {
     id = id || genId();
+    elScale = elScale || 1;
     const el = document.createElement('div');
     el.className = 'board-sticker';
     el.textContent = emoji;
     el.dataset.id = id;
     el.dataset.worldX = wx;
     el.dataset.worldY = wy;
+    el.dataset.elScale = elScale;
+
+    createResizeHandle(el);
 
     el.addEventListener('mousedown', startDragElement);
     el.addEventListener('touchstart', startDragElementTouch, { passive: false });
@@ -387,7 +535,7 @@ function addStickerElement(emoji, wx, wy, id) {
     elementsLayer.appendChild(el);
 
     if (!elements.find(e => e.id === id)) {
-        elements.push({ id, type: 'sticker', x: wx, y: wy, sticker: emoji });
+        elements.push({ id, type: 'sticker', x: wx, y: wy, sticker: emoji, elScale });
     }
 }
 
@@ -396,6 +544,8 @@ function addStickerElement(emoji, wx, wy, id) {
 // ============================================
 function startDragElement(e) {
     if (currentTool === 'draw' || currentTool === 'eraser') return;
+    // Don't start drag if resize handle was clicked
+    if (e.target.classList.contains('resize-handle')) return;
     e.preventDefault();
     e.stopPropagation();
     const el = e.currentTarget;
@@ -409,6 +559,7 @@ function startDragElement(e) {
 
 function startDragElementTouch(e) {
     if (currentTool === 'draw' || currentTool === 'eraser') return;
+    if (e.target.classList.contains('resize-handle')) return;
     if (e.touches.length !== 1) return;
     e.preventDefault();
     e.stopPropagation();
@@ -462,15 +613,15 @@ function updateElementData(el) {
     if (item) {
         item.x = parseFloat(el.dataset.worldX);
         item.y = parseFloat(el.dataset.worldY);
+        item.elScale = parseFloat(el.dataset.elScale) || 1;
     }
     saveState();
 }
 
 // ============================================
-// Mouse drawing events
+// Mouse drawing - FAST PATH
 // ============================================
 canvas.addEventListener('mousedown', (e) => {
-    // Sticker placement
     if (stickerPlaceMode && selectedSticker) {
         const world = screenToWorld(e.clientX, e.clientY);
         addStickerElement(selectedSticker, world.x, world.y);
@@ -503,21 +654,23 @@ canvas.addEventListener('mousedown', (e) => {
 
 canvas.addEventListener('mousemove', (e) => {
     if (isPanning) {
-        const dx = (e.clientX - panStartScreenX) / scale;
-        const dy = (e.clientY - panStartScreenY) / scale;
-        camX = panStartCamX - dx;
-        camY = panStartCamY - dy;
-        needsRedraw = true;
+        camX = panStartCamX - (e.clientX - panStartScreenX) / scale;
+        camY = panStartCamY - (e.clientY - panStartScreenY) / scale;
+        viewportDirty = true;
         return;
     }
     if (!isDrawing) return;
     const world = screenToWorld(e.clientX, e.clientY);
+
+    // Draw ONLY the new segment on live canvas (fast!)
     if (currentTool === 'eraser') {
-        eraseLineOn(sctx, lastWorldX, lastWorldY, world.x, world.y, brushSize);
+        // Eraser draws directly on committed canvas
+        eraseSegment(cctx, lastWorldX, lastWorldY, world.x, world.y, brushSize);
     } else {
-        drawMarkerLineOn(sctx, lastWorldX, lastWorldY, world.x, world.y, currentColor, brushSize);
+        drawMarkerSegment(lctx, lastWorldX, lastWorldY, world.x, world.y, currentColor, brushSize);
     }
-    needsRedraw = true;
+    compositeDirty = true; // just recomposite, don't rebuild
+
     currentStroke.points.push({ x: world.x, y: world.y });
     lastWorldX = world.x;
     lastWorldY = world.y;
@@ -535,6 +688,20 @@ function endDrawing() {
     }
     if (isDrawing && currentStroke && currentStroke.points.length > 1) {
         drawingHistory.push(currentStroke);
+
+        if (!currentStroke.eraser) {
+            // Merge live canvas into committed canvas
+            const rect = canvas.getBoundingClientRect();
+            cctx.save();
+            cctx.setTransform(1, 0, 0, 1, 0, 0);
+            cctx.drawImage(liveCanvas, 0, 0);
+            cctx.restore();
+        }
+        // Clear live canvas
+        const rect = canvas.getBoundingClientRect();
+        lctx.clearRect(0, 0, rect.width, rect.height);
+        compositeDirty = true;
+
         saveState();
     }
     isDrawing = false;
@@ -548,9 +715,11 @@ canvas.addEventListener('touchstart', (e) => {
     if (e.touches.length === 2) {
         e.preventDefault();
         isDrawing = false;
-        currentStroke = null;
-        const t1 = e.touches[0];
-        const t2 = e.touches[1];
+        if (currentStroke) {
+            lctx.clearRect(0, 0, canvas.getBoundingClientRect().width, canvas.getBoundingClientRect().height);
+            currentStroke = null;
+        }
+        const t1 = e.touches[0], t2 = e.touches[1];
         pinchStartDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
         pinchStartScale = scale;
         pinchStartCamX = camX;
@@ -562,7 +731,6 @@ canvas.addEventListener('touchstart', (e) => {
         return;
     }
 
-    // Sticker placement
     if (stickerPlaceMode && selectedSticker) {
         e.preventDefault();
         const world = screenToWorld(e.touches[0].clientX, e.touches[0].clientY);
@@ -588,9 +756,7 @@ canvas.addEventListener('touchstart', (e) => {
     lastWorldY = world.y;
     isDrawing = true;
     currentStroke = {
-        type: 'line',
-        color: currentColor,
-        size: brushSize,
+        type: 'line', color: currentColor, size: brushSize,
         eraser: currentTool === 'eraser',
         points: [{ x: world.x, y: world.y }]
     };
@@ -599,42 +765,30 @@ canvas.addEventListener('touchstart', (e) => {
 canvas.addEventListener('touchmove', (e) => {
     if (e.touches.length === 2) {
         e.preventDefault();
-        const t1 = e.touches[0];
-        const t2 = e.touches[1];
+        const t1 = e.touches[0], t2 = e.touches[1];
         const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
         const newScale = Math.max(0.1, Math.min(5, pinchStartScale * (dist / pinchStartDist)));
-
-        const center = {
-            x: (t1.clientX + t2.clientX) / 2,
-            y: (t1.clientY + t2.clientY) / 2
-        };
-
+        const center = { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
         const rect = canvas.getBoundingClientRect();
         const cx = center.x - rect.left;
         const cy = center.y - rect.top;
-
         const worldX = pinchStartCamX + cx / pinchStartScale;
         const worldY = pinchStartCamY + cy / pinchStartScale;
-
         const panDx = (center.x - lastPinchCenter.x) / newScale;
         const panDy = (center.y - lastPinchCenter.y) / newScale;
-
         camX = worldX - cx / newScale - panDx;
         camY = worldY - cy / newScale - panDy;
         scale = newScale;
-
         lastPinchCenter = center;
-        needsRedraw = true;
+        viewportDirty = true;
         return;
     }
 
     if (isPanning) {
         e.preventDefault();
-        const dx = (e.touches[0].clientX - panStartScreenX) / scale;
-        const dy = (e.touches[0].clientY - panStartScreenY) / scale;
-        camX = panStartCamX - dx;
-        camY = panStartCamY - dy;
-        needsRedraw = true;
+        camX = panStartCamX - (e.touches[0].clientX - panStartScreenX) / scale;
+        camY = panStartCamY - (e.touches[0].clientY - panStartScreenY) / scale;
+        viewportDirty = true;
         return;
     }
 
@@ -642,20 +796,18 @@ canvas.addEventListener('touchmove', (e) => {
     e.preventDefault();
     const world = screenToWorld(e.touches[0].clientX, e.touches[0].clientY);
     if (currentTool === 'eraser') {
-        eraseLineOn(sctx, lastWorldX, lastWorldY, world.x, world.y, brushSize);
+        eraseSegment(cctx, lastWorldX, lastWorldY, world.x, world.y, brushSize);
     } else {
-        drawMarkerLineOn(sctx, lastWorldX, lastWorldY, world.x, world.y, currentColor, brushSize);
+        drawMarkerSegment(lctx, lastWorldX, lastWorldY, world.x, world.y, currentColor, brushSize);
     }
-    needsRedraw = true;
+    compositeDirty = true;
     currentStroke.points.push({ x: world.x, y: world.y });
     lastWorldX = world.x;
     lastWorldY = world.y;
 }, { passive: false });
 
 canvas.addEventListener('touchend', (e) => {
-    if (e.touches.length < 2) {
-        lastPinchCenter = null;
-    }
+    if (e.touches.length < 2) lastPinchCenter = null;
     if (isPanning) {
         isPanning = false;
         saveState();
@@ -682,8 +834,7 @@ function showTextModal(wx, wy) {
 
     const modalColors = document.getElementById('modalColors');
     modalColors.innerHTML = '';
-    const colors = ['#222222', '#e74c3c', '#2980b9', '#27ae60', '#8e44ad', '#e67e22', '#e91e8c', '#16a085'];
-    colors.forEach(c => {
+    ['#222222', '#e74c3c', '#2980b9', '#27ae60', '#8e44ad', '#e67e22', '#e91e8c', '#16a085'].forEach(c => {
         const btn = document.createElement('button');
         btn.className = 'color-btn' + (c === textColor ? ' active' : '');
         btn.style.background = c;
@@ -703,14 +854,13 @@ function showTextModal(wx, wy) {
         }
         textModal.classList.remove('active');
     };
-
     document.getElementById('textCancel').onclick = () => {
         textModal.classList.remove('active');
     };
 }
 
 // ============================================
-// Sticker Picker
+// Sticker picker
 // ============================================
 function initStickerPicker() {
     const tabsContainer = document.getElementById('stickerTabs');
@@ -718,10 +868,20 @@ function initStickerPicker() {
     const searchInput = document.getElementById('stickerSearch');
     const categories = Object.keys(STICKER_CATEGORIES);
 
-    // Build tabs
-    categories.forEach((cat, i) => {
+    const allTab = document.createElement('button');
+    allTab.className = 'sticker-tab active';
+    allTab.textContent = 'All';
+    allTab.addEventListener('click', () => {
+        tabsContainer.querySelectorAll('.sticker-tab').forEach(t => t.classList.remove('active'));
+        allTab.classList.add('active');
+        searchInput.value = '';
+        renderStickers(null);
+    });
+    tabsContainer.appendChild(allTab);
+
+    categories.forEach(cat => {
         const tab = document.createElement('button');
-        tab.className = 'sticker-tab' + (i === 0 ? ' active' : '');
+        tab.className = 'sticker-tab';
         tab.textContent = cat;
         tab.addEventListener('click', () => {
             tabsContainer.querySelectorAll('.sticker-tab').forEach(t => t.classList.remove('active'));
@@ -732,42 +892,19 @@ function initStickerPicker() {
         tabsContainer.appendChild(tab);
     });
 
-    // Add "All" tab at start
-    const allTab = document.createElement('button');
-    allTab.className = 'sticker-tab';
-    allTab.textContent = 'All';
-    allTab.addEventListener('click', () => {
-        tabsContainer.querySelectorAll('.sticker-tab').forEach(t => t.classList.remove('active'));
-        allTab.classList.add('active');
-        searchInput.value = '';
-        renderStickers(null);
-    });
-    tabsContainer.insertBefore(allTab, tabsContainer.firstChild);
-
-    // Search
     searchInput.addEventListener('input', () => {
         const query = searchInput.value.toLowerCase();
         tabsContainer.querySelectorAll('.sticker-tab').forEach(t => t.classList.remove('active'));
-        if (!query) {
-            tabsContainer.children[0].classList.add('active');
-            renderStickers(null);
-        } else {
-            renderFilteredStickers(query);
-        }
+        renderFilteredStickers(query);
     });
 
-    renderStickers(categories[0]);
+    renderStickers(null);
 }
 
 function renderStickers(category) {
     const grid = document.getElementById('stickerGrid');
     grid.innerHTML = '';
-    let stickers;
-    if (category) {
-        stickers = STICKER_CATEGORIES[category] || [];
-    } else {
-        stickers = Object.values(STICKER_CATEGORIES).flat();
-    }
+    const stickers = category ? (STICKER_CATEGORIES[category] || []) : Object.values(STICKER_CATEGORIES).flat();
     stickers.forEach(emoji => {
         const btn = document.createElement('button');
         btn.className = 'sticker-option';
@@ -780,20 +917,16 @@ function renderStickers(category) {
 function renderFilteredStickers(query) {
     const grid = document.getElementById('stickerGrid');
     grid.innerHTML = '';
-    // Search by category name
-    const allStickers = [];
+    const all = [];
     for (const [cat, stickers] of Object.entries(STICKER_CATEGORIES)) {
-        if (cat.toLowerCase().includes(query)) {
-            stickers.forEach(s => { if (!allStickers.includes(s)) allStickers.push(s); });
+        if (!query || cat.toLowerCase().includes(query)) {
+            stickers.forEach(s => { if (!all.includes(s)) all.push(s); });
         }
     }
-    // Also show all if query is too short
-    if (allStickers.length === 0) {
-        Object.values(STICKER_CATEGORIES).flat().forEach(s => {
-            if (!allStickers.includes(s)) allStickers.push(s);
-        });
+    if (all.length === 0) {
+        Object.values(STICKER_CATEGORIES).flat().forEach(s => { if (!all.includes(s)) all.push(s); });
     }
-    allStickers.forEach(emoji => {
+    all.forEach(emoji => {
         const btn = document.createElement('button');
         btn.className = 'sticker-option';
         btn.textContent = emoji;
@@ -807,7 +940,6 @@ function selectSticker(emoji) {
     stickerPlaceMode = true;
     stickerPicker.classList.remove('active');
     canvas.style.cursor = 'copy';
-    // Place on next click, handled in mousedown/touchstart
 }
 
 function toggleStickerPicker() {
@@ -829,8 +961,8 @@ photoInput.addEventListener('change', (e) => {
     const reader = new FileReader();
     reader.onload = (ev) => {
         const rect = canvas.getBoundingClientRect();
-        const centerWorld = screenToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
-        addPhotoElement(ev.target.result, centerWorld.x - 100, centerWorld.y - 100, null);
+        const cw = screenToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        addPhotoElement(ev.target.result, cw.x - 100, cw.y - 100, null);
         saveState();
     };
     reader.readAsDataURL(file);
@@ -842,7 +974,6 @@ photoInput.addEventListener('change', (e) => {
 // ============================================
 document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
     btn.addEventListener('click', () => {
-        // Close sticker picker if switching away
         if (btn.dataset.tool !== 'sticker') {
             stickerPicker.classList.remove('active');
             stickerPlaceMode = false;
@@ -867,19 +998,13 @@ document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
             }, 100);
         }
 
-        if (currentTool === 'pan') {
-            canvas.style.cursor = 'grab';
-        } else if (currentTool === 'eraser') {
-            canvas.style.cursor = 'cell';
-        } else if (currentTool === 'text') {
-            canvas.style.cursor = 'text';
-        } else {
-            canvas.style.cursor = 'crosshair';
-        }
+        canvas.style.cursor =
+            currentTool === 'pan' ? 'grab' :
+            currentTool === 'eraser' ? 'cell' :
+            currentTool === 'text' ? 'text' : 'crosshair';
     });
 });
 
-// Color buttons
 document.querySelectorAll('#colorPalette .color-btn').forEach(btn => {
     btn.addEventListener('click', () => {
         document.querySelectorAll('#colorPalette .color-btn').forEach(b => b.classList.remove('active'));
@@ -888,7 +1013,6 @@ document.querySelectorAll('#colorPalette .color-btn').forEach(btn => {
     });
 });
 
-// Brush size
 brushSizeInput.addEventListener('input', (e) => {
     brushSize = parseInt(e.target.value);
 });
@@ -898,28 +1022,21 @@ brushSizeInput.addEventListener('input', (e) => {
 // ============================================
 function zoomAtCenter(newScale) {
     const rect = canvas.getBoundingClientRect();
-    const cx = rect.width / 2;
-    const cy = rect.height / 2;
-    const worldCX = camX + cx / scale;
-    const worldCY = camY + cy / scale;
+    const cx = rect.width / 2, cy = rect.height / 2;
+    const wcx = camX + cx / scale, wcy = camY + cy / scale;
     scale = newScale;
-    camX = worldCX - cx / scale;
-    camY = worldCY - cy / scale;
-    needsRedraw = true;
+    camX = wcx - cx / scale;
+    camY = wcy - cy / scale;
+    viewportDirty = true;
 }
 
-document.getElementById('zoomIn').addEventListener('click', () => {
-    zoomAtCenter(Math.min(5, scale * 1.25));
-});
-
-document.getElementById('zoomOut').addEventListener('click', () => {
-    zoomAtCenter(Math.max(0.1, scale / 1.25));
-});
+document.getElementById('zoomIn').addEventListener('click', () => zoomAtCenter(Math.min(5, scale * 1.25)));
+document.getElementById('zoomOut').addEventListener('click', () => zoomAtCenter(Math.max(0.1, scale / 1.25)));
 
 document.getElementById('undoBtn').addEventListener('click', () => {
     if (drawingHistory.length > 0) {
         drawingHistory.pop();
-        needsRedraw = true;
+        viewportDirty = true;
         saveState();
     }
 });
@@ -929,7 +1046,7 @@ document.getElementById('clearBtn').addEventListener('click', () => {
         drawingHistory = [];
         elements = [];
         elementsLayer.innerHTML = '';
-        needsRedraw = true;
+        viewportDirty = true;
         saveState();
     }
 });
@@ -937,20 +1054,18 @@ document.getElementById('clearBtn').addEventListener('click', () => {
 boardContainer.addEventListener('wheel', (e) => {
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
-    const cx = e.clientX - rect.left;
-    const cy = e.clientY - rect.top;
-    const worldX = camX + cx / scale;
-    const worldY = camY + cy / scale;
-    const factor = e.deltaY > 0 ? 0.9 : 1.1;
-    scale = Math.max(0.1, Math.min(5, scale * factor));
-    camX = worldX - cx / scale;
-    camY = worldY - cy / scale;
-    needsRedraw = true;
+    const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    const wx = camX + cx / scale, wy = camY + cy / scale;
+    scale = Math.max(0.1, Math.min(5, scale * (e.deltaY > 0 ? 0.9 : 1.1)));
+    camX = wx - cx / scale;
+    camY = wy - cy / scale;
+    viewportDirty = true;
 }, { passive: false });
 
 // ============================================
 // Keyboard shortcuts
 // ============================================
+let spaceWasDown = false;
 document.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
     if (e.ctrlKey && e.key === 'z') {
@@ -959,6 +1074,7 @@ document.addEventListener('keydown', (e) => {
     }
     if (e.key === ' ' && !e.repeat) {
         e.preventDefault();
+        spaceWasDown = true;
         document.querySelector('[data-tool="pan"]').click();
     }
     if (e.key === 'Escape') {
@@ -970,7 +1086,8 @@ document.addEventListener('keydown', (e) => {
 });
 
 document.addEventListener('keyup', (e) => {
-    if (e.key === ' ') {
+    if (e.key === ' ' && spaceWasDown) {
+        spaceWasDown = false;
         document.querySelector('[data-tool="draw"]').click();
     }
 });
@@ -981,7 +1098,7 @@ document.getElementById('homeBtn').addEventListener('click', () => {
     camX = -rect.width / 2;
     camY = -rect.height / 2;
     scale = 1;
-    needsRedraw = true;
+    viewportDirty = true;
 });
 
 // ============================================
@@ -999,7 +1116,6 @@ renderLoop();
 
 window.addEventListener('resize', () => {
     resizeCanvas();
-    needsRedraw = true;
 });
 
 if ('ontouchstart' in window) {
