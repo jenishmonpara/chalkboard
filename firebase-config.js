@@ -1,23 +1,14 @@
 // ============================================
 // Firebase Configuration
 // ============================================
-// To enable real-time sync between devices:
-// 1. Go to https://console.firebase.google.com
-// 2. Create a new project (or use an existing one)
-// 3. Go to Build > Realtime Database > Create Database
-//    - Choose "Start in test mode" for easy setup
-// 4. Go to Project Settings > General > Your apps > Add web app
-// 5. Copy your config values below
-//
-// IMPORTANT: Set the rules on your Realtime Database to allow read/write:
-//   { "rules": { ".read": true, ".write": true } }
 
 const FIREBASE_CONFIG = {
-    apiKey: "",
-    authDomain: "",
-    databaseURL: "",
-    projectId: "",
-    storageBucket: "",
-    messagingSenderId: "",
-    appId: ""
+    apiKey: "AIzaSyArIai16LAb_o_Mlvzzg0y8yr_Lxuz7tG4",
+    authDomain: "fanny-birthday.firebaseapp.com",
+    databaseURL: "https://fanny-birthday-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "fanny-birthday",
+    storageBucket: "fanny-birthday.firebasestorage.app",
+    messagingSenderId: "705475290188",
+    appId: "1:705475290188:web:2a193495a972e13ef040e9",
+    measurementId: "G-HVSB4MM16E"
 };
