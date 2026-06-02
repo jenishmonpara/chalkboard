@@ -629,3 +629,7 @@ body {
 .sync-status.connected {
     background: rgba(39, 174, 96, 0.8);
 }
+
+.sync-status.error {
+    background: rgba(192, 57, 43, 0.8);
+}

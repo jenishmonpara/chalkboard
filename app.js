@@ -97,12 +97,27 @@ function setSyncConnected() {
     const statusEl = document.getElementById('syncStatus');
     if (statusEl) {
         statusEl.textContent = 'Synced';
+        statusEl.classList.remove('error');
         statusEl.classList.add('connected');
+    }
+}
+
+function setSyncOffline(msg) {
+    const statusEl = document.getElementById('syncStatus');
+    if (statusEl) {
+        statusEl.textContent = msg || 'Offline — local only';
+        statusEl.classList.remove('connected');
+        statusEl.classList.add('error');
     }
 }
 
 function cacheLocal() {
     try { localStorage.setItem('chalkboard_state', JSON.stringify(buildState())); } catch (e) { /* ignore */ }
+}
+
+// Per-item writes fail silently otherwise; log so sync problems are visible.
+function syncErr(e) {
+    console.warn('Firebase write failed:', e);
 }
 
 // Firebase rejects undefined/null — build a clean object per element
@@ -148,10 +163,10 @@ function initFirebase() {
         strokesRef = firebaseDb.ref('board/strokes');
         elementsRef = firebaseDb.ref('board/elements');
         firebaseReady = true;
-        setSyncConnected();
-        console.info('Firebase connected — real-time sync enabled!');
 
-        // One-time reconcile: merge remote <-> local into the union, then go live
+        // One-time reconcile: merge remote <-> local into the union, then go live.
+        // Only treat ourselves as synced once this read actually succeeds — a
+        // denied read (e.g. Realtime Database rules) means we are local-only.
         firebaseDb.ref('board').once('value').then((snap) => {
             const data = snap.val() || {};
             const remoteStrokes = data.strokes || {};
@@ -175,27 +190,38 @@ function initFirebase() {
             drawingHistory.forEach(s => {
                 if (s.id && !remoteStrokes[s.id]) {
                     knownStrokeIds.add(s.id);
-                    strokesRef.child(s.id).set(s).catch(() => {});
+                    strokesRef.child(s.id).set(s).catch(syncErr);
                 }
             });
             // Push our local-only elements up
             elements.forEach(el => {
                 if (el.id && !remoteElements[el.id]) {
                     knownElementIds.add(el.id);
-                    elementsRef.child(el.id).set(serializeElement(el)).catch(() => {});
+                    elementsRef.child(el.id).set(serializeElement(el)).catch(syncErr);
                 }
             });
 
             viewportDirty = true;
             compositeDirty = true;
             cacheLocal();
+            setSyncConnected();
+            console.info('Firebase connected — real-time sync enabled!');
             attachLiveListeners();
         }).catch(err => {
-            console.warn('Firebase reconcile failed:', err);
-            attachLiveListeners();
+            // Most commonly a permission-denied from Realtime Database rules.
+            // Without access we cannot sync, so stop pushing and tell the user.
+            firebaseReady = false;
+            console.error(
+                'Firebase sync unavailable — running local-only. ' +
+                'Check your Realtime Database security rules in the Firebase console:',
+                err
+            );
+            setSyncOffline('Offline — local only');
         });
     } catch (e) {
-        console.warn('Firebase init failed:', e);
+        firebaseReady = false;
+        console.error('Firebase init failed — running local-only:', e);
+        setSyncOffline('Offline — local only');
     }
 }
 
@@ -254,17 +280,17 @@ function attachLiveListeners() {
 function syncPushStroke(stroke) {
     if (!firebaseReady || !stroke || !stroke.id) return;
     knownStrokeIds.add(stroke.id);
-    strokesRef.child(stroke.id).set(stroke).catch(() => {});
+    strokesRef.child(stroke.id).set(stroke).catch(syncErr);
 }
 function syncRemoveStroke(id) {
     if (!firebaseReady || !id) return;
     knownStrokeIds.delete(id);
-    strokesRef.child(id).remove().catch(() => {});
+    strokesRef.child(id).remove().catch(syncErr);
 }
 function syncPushElement(item) {
     if (!firebaseReady || !item || !item.id) return;
     knownElementIds.add(item.id);
-    elementsRef.child(item.id).set(serializeElement(item)).catch(() => {});
+    elementsRef.child(item.id).set(serializeElement(item)).catch(syncErr);
 }
 function syncUpdateElement(item) {
     if (!firebaseReady || !item || !item.id) return;
@@ -272,18 +298,18 @@ function syncUpdateElement(item) {
     const patch = { x: item.x, y: item.y };
     if (item.elScale !== undefined) patch.elScale = item.elScale;
     if (item.rotation !== undefined) patch.rotation = item.rotation;
-    elementsRef.child(item.id).update(patch).catch(() => {});
+    elementsRef.child(item.id).update(patch).catch(syncErr);
 }
 function syncRemoveElement(id) {
     if (!firebaseReady || !id) return;
     knownElementIds.delete(id);
-    elementsRef.child(id).remove().catch(() => {});
+    elementsRef.child(id).remove().catch(syncErr);
 }
 function syncClearBoard() {
     if (!firebaseReady) return;
     knownStrokeIds.clear();
     knownElementIds.clear();
-    firebaseDb.ref('board').remove().catch(() => {});
+    firebaseDb.ref('board').remove().catch(syncErr);
 }
 
 // ============================================
