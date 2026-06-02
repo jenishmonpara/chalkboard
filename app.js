@@ -67,129 +67,223 @@ const cctx = committedCanvas.getContext('2d');
 const liveCanvas = document.createElement('canvas');
 const lctx = liveCanvas.getContext('2d');
 
-// Multi-user sync
+// Multi-user sync — same-browser tabs fallback (only used when Firebase is off)
 let broadcastChannel = null;
 try {
     broadcastChannel = new BroadcastChannel('whiteboard_sync');
     broadcastChannel.onmessage = (e) => {
-        if (e.data.type === 'state_update') {
+        if (!firebaseReady && e.data.type === 'state_update') {
             loadStateFromData(e.data.state);
         }
     };
 } catch (ex) { /* BroadcastChannel not supported */ }
 
-// Firebase real-time sync
+// ============================================
+// Firebase real-time sync (additive, per-item)
+//
+// Each stroke and element is stored under its own id key, so two
+// devices merge into the UNION of their content instead of
+// overwriting each other. child_added/changed/removed keep every
+// client live without ever clobbering concurrent edits.
+// ============================================
 let firebaseDb = null;
 let firebaseReady = false;
-let suppressFirebaseSync = false;
+let strokesRef = null;
+let elementsRef = null;
+const knownStrokeIds = new Set();   // ids already applied locally (ignore our own echoes)
+const knownElementIds = new Set();
+
+function setSyncConnected() {
+    const statusEl = document.getElementById('syncStatus');
+    if (statusEl) {
+        statusEl.textContent = 'Synced';
+        statusEl.classList.add('connected');
+    }
+}
+
+function cacheLocal() {
+    try { localStorage.setItem('chalkboard_state', JSON.stringify(buildState())); } catch (e) { /* ignore */ }
+}
+
+// Firebase rejects undefined/null — build a clean object per element
+function serializeElement(item) {
+    const out = {};
+    ['id', 'type', 'x', 'y', 'color', 'text', 'fontSize', 'src', 'rotation', 'sticker', 'elScale'].forEach(k => {
+        if (item[k] !== undefined && item[k] !== null) out[k] = item[k];
+    });
+    return out;
+}
+
+function createElementFromData(el) {
+    if (el.type === 'text') addTextElement(el.text, el.x, el.y, el.color, el.fontSize, el.id, el.elScale);
+    else if (el.type === 'photo') addPhotoElement(el.src, el.x, el.y, el.rotation, el.id, el.elScale);
+    else if (el.type === 'sticker') addStickerElement(el.sticker, el.x, el.y, el.id, el.elScale);
+}
+
+function applyRemoteElementUpdate(el) {
+    const item = elements.find(x => x.id === el.id);
+    const domEl = document.querySelector(`[data-id="${el.id}"]`);
+    if (!item || !domEl) {
+        if (!item) { createElementFromData(el); knownElementIds.add(el.id); }
+        return;
+    }
+    item.x = el.x;
+    item.y = el.y;
+    if (el.elScale !== undefined) item.elScale = el.elScale;
+    if (el.rotation !== undefined) item.rotation = el.rotation;
+    domEl.dataset.worldX = el.x;
+    domEl.dataset.worldY = el.y;
+    if (el.elScale !== undefined) domEl.dataset.elScale = el.elScale;
+    if (el.rotation !== undefined) domEl.dataset.rotation = el.rotation;
+}
 
 function initFirebase() {
     if (typeof FIREBASE_CONFIG === 'undefined' || !FIREBASE_CONFIG.databaseURL) {
-        console.info('Firebase not configured — running in local-only mode. Edit firebase-config.js to enable sync.');
+        console.info('Firebase not configured — local-only mode. Edit firebase-config.js to enable sync.');
         return;
     }
     try {
-        const app = firebase.initializeApp(FIREBASE_CONFIG);
+        firebase.initializeApp(FIREBASE_CONFIG);
         firebaseDb = firebase.database();
+        strokesRef = firebaseDb.ref('board/strokes');
+        elementsRef = firebaseDb.ref('board/elements');
         firebaseReady = true;
+        setSyncConnected();
         console.info('Firebase connected — real-time sync enabled!');
-        const statusEl = document.getElementById('syncStatus');
-        if (statusEl) {
-            statusEl.textContent = 'Synced';
-            statusEl.classList.add('connected');
-        }
 
-        // Listen for remote changes
-        const boardRef = firebaseDb.ref('board');
+        // One-time reconcile: merge remote <-> local into the union, then go live
+        firebaseDb.ref('board').once('value').then((snap) => {
+            const data = snap.val() || {};
+            const remoteStrokes = data.strokes || {};
+            const remoteElements = data.elements || {};
 
-        // Strokes
-        firebaseDb.ref('board/strokes').on('value', (snap) => {
-            if (suppressFirebaseSync) return;
-            const data = snap.val();
-            const remoteStrokes = data ? Object.values(data) : [];
-            // Merge: keep strokes we don't have
-            const localIds = new Set(drawingHistory.map(s => s.id));
-            let changed = false;
-            remoteStrokes.forEach(s => {
-                if (!localIds.has(s.id)) {
-                    drawingHistory.push(s);
-                    changed = true;
+            // Pull remote strokes we don't already have
+            Object.values(remoteStrokes).forEach(s => {
+                if (s && s.id) {
+                    if (!drawingHistory.find(x => x.id === s.id)) drawingHistory.push(s);
+                    knownStrokeIds.add(s.id);
                 }
             });
-            // Remove strokes that were deleted remotely
-            const remoteIds = new Set(remoteStrokes.map(s => s.id));
-            const before = drawingHistory.length;
-            drawingHistory = drawingHistory.filter(s => remoteIds.has(s.id));
-            if (drawingHistory.length !== before) changed = true;
-
-            if (changed) {
-                viewportDirty = true;
-                compositeDirty = true;
-                localStorage.setItem('chalkboard_state', JSON.stringify(buildState()));
-            }
-        });
-
-        // Elements
-        firebaseDb.ref('board/elements').on('value', (snap) => {
-            if (suppressFirebaseSync) return;
-            const data = snap.val();
-            const remoteElements = data ? Object.values(data) : [];
-            const localIds = new Set(elements.map(e => e.id));
-            const remoteIds = new Set(remoteElements.map(e => e.id));
-            let changed = false;
-
-            // Add new remote elements
-            remoteElements.forEach(el => {
-                if (!localIds.has(el.id)) {
-                    if (el.type === 'text') {
-                        addTextElement(el.text, el.x, el.y, el.color, el.fontSize, el.id, el.elScale);
-                    } else if (el.type === 'photo') {
-                        addPhotoElement(el.src, el.x, el.y, el.rotation, el.id, el.elScale);
-                    } else if (el.type === 'sticker') {
-                        addStickerElement(el.sticker, el.x, el.y, el.id, el.elScale);
-                    }
-                    changed = true;
+            // Pull remote elements we don't already have
+            Object.values(remoteElements).forEach(el => {
+                if (el && el.id) {
+                    if (!elements.find(x => x.id === el.id)) createElementFromData(el);
+                    knownElementIds.add(el.id);
+                }
+            });
+            // Push our local-only strokes up
+            drawingHistory.forEach(s => {
+                if (s.id && !remoteStrokes[s.id]) {
+                    knownStrokeIds.add(s.id);
+                    strokesRef.child(s.id).set(s).catch(() => {});
+                }
+            });
+            // Push our local-only elements up
+            elements.forEach(el => {
+                if (el.id && !remoteElements[el.id]) {
+                    knownElementIds.add(el.id);
+                    elementsRef.child(el.id).set(serializeElement(el)).catch(() => {});
                 }
             });
 
-            // Remove elements deleted remotely
-            const toRemove = elements.filter(e => !remoteIds.has(e.id));
-            toRemove.forEach(e => {
-                const domEl = document.querySelector(`[data-id="${e.id}"]`);
-                if (domEl) domEl.remove();
-            });
-            if (toRemove.length > 0) {
-                elements = elements.filter(e => remoteIds.has(e.id));
-                changed = true;
-            }
-
-            if (changed) {
-                localStorage.setItem('chalkboard_state', JSON.stringify(buildState()));
-            }
+            viewportDirty = true;
+            compositeDirty = true;
+            cacheLocal();
+            attachLiveListeners();
+        }).catch(err => {
+            console.warn('Firebase reconcile failed:', err);
+            attachLiveListeners();
         });
     } catch (e) {
         console.warn('Firebase init failed:', e);
     }
 }
 
-function firebaseSave() {
-    if (!firebaseReady) return;
-    suppressFirebaseSync = true;
-    const state = buildState();
-    const strokesObj = {};
-    state.strokes.forEach(s => { strokesObj[s.id] = s; });
-    const elementsObj = {};
-    state.elements.forEach(e => { elementsObj[e.id] = e; });
-
-    Promise.all([
-        firebaseDb.ref('board/strokes').set(strokesObj),
-        firebaseDb.ref('board/elements').set(elementsObj)
-    ]).then(() => {
-        setTimeout(() => { suppressFirebaseSync = false; }, 500);
-    }).catch(err => {
-        console.warn('Firebase save error:', err);
-        suppressFirebaseSync = false;
+function attachLiveListeners() {
+    strokesRef.on('child_added', (snap) => {
+        const s = snap.val();
+        if (!s || !s.id || knownStrokeIds.has(s.id)) return;
+        knownStrokeIds.add(s.id);
+        if (!drawingHistory.find(x => x.id === s.id)) {
+            drawingHistory.push(s);
+            viewportDirty = true;
+            compositeDirty = true;
+            cacheLocal();
+        }
     });
+    strokesRef.on('child_removed', (snap) => {
+        const s = snap.val();
+        if (!s || !s.id) return;
+        knownStrokeIds.delete(s.id);
+        const before = drawingHistory.length;
+        drawingHistory = drawingHistory.filter(x => x.id !== s.id);
+        if (drawingHistory.length !== before) {
+            viewportDirty = true;
+            compositeDirty = true;
+            cacheLocal();
+        }
+    });
+
+    elementsRef.on('child_added', (snap) => {
+        const el = snap.val();
+        if (!el || !el.id || knownElementIds.has(el.id)) return;
+        knownElementIds.add(el.id);
+        if (!elements.find(x => x.id === el.id)) {
+            createElementFromData(el);
+            cacheLocal();
+        }
+    });
+    elementsRef.on('child_changed', (snap) => {
+        const el = snap.val();
+        if (!el || !el.id) return;
+        applyRemoteElementUpdate(el);
+        cacheLocal();
+    });
+    elementsRef.on('child_removed', (snap) => {
+        const el = snap.val();
+        if (!el || !el.id) return;
+        knownElementIds.delete(el.id);
+        const domEl = document.querySelector(`[data-id="${el.id}"]`);
+        if (domEl) domEl.remove();
+        elements = elements.filter(x => x.id !== el.id);
+        cacheLocal();
+    });
+}
+
+// ---- Local action -> Firebase (per-item, never clobbers others) ----
+function syncPushStroke(stroke) {
+    if (!firebaseReady || !stroke || !stroke.id) return;
+    knownStrokeIds.add(stroke.id);
+    strokesRef.child(stroke.id).set(stroke).catch(() => {});
+}
+function syncRemoveStroke(id) {
+    if (!firebaseReady || !id) return;
+    knownStrokeIds.delete(id);
+    strokesRef.child(id).remove().catch(() => {});
+}
+function syncPushElement(item) {
+    if (!firebaseReady || !item || !item.id) return;
+    knownElementIds.add(item.id);
+    elementsRef.child(item.id).set(serializeElement(item)).catch(() => {});
+}
+function syncUpdateElement(item) {
+    if (!firebaseReady || !item || !item.id) return;
+    knownElementIds.add(item.id);
+    const patch = { x: item.x, y: item.y };
+    if (item.elScale !== undefined) patch.elScale = item.elScale;
+    if (item.rotation !== undefined) patch.rotation = item.rotation;
+    elementsRef.child(item.id).update(patch).catch(() => {});
+}
+function syncRemoveElement(id) {
+    if (!firebaseReady || !id) return;
+    knownElementIds.delete(id);
+    elementsRef.child(id).remove().catch(() => {});
+}
+function syncClearBoard() {
+    if (!firebaseReady) return;
+    knownStrokeIds.clear();
+    knownElementIds.clear();
+    firebaseDb.ref('board').remove().catch(() => {});
 }
 
 // ============================================
@@ -432,10 +526,10 @@ function _doSave() {
     try {
         const state = buildState();
         localStorage.setItem('chalkboard_state', JSON.stringify(state));
-        if (broadcastChannel) {
+        // Cross-tab fallback only matters when Firebase isn't running the show
+        if (broadcastChannel && !firebaseReady) {
             broadcastChannel.postMessage({ type: 'state_update', state });
         }
-        firebaseSave();
     } catch (e) {
         console.warn('Could not save state:', e);
     }
@@ -593,9 +687,12 @@ function addTextElement(text, wx, wy, color, fontSize, id, elScale) {
 
     elementsLayer.appendChild(el);
 
-    if (!elements.find(e => e.id === id)) {
-        elements.push({ id, type: 'text', x: wx, y: wy, color: color || '#222222', text, fontSize: fontSize || 24, elScale });
+    let item = elements.find(e => e.id === id);
+    if (!item) {
+        item = { id, type: 'text', x: wx, y: wy, color: color || '#222222', text, fontSize: fontSize || 24, elScale };
+        elements.push(item);
     }
+    return item;
 }
 
 function addPhotoElement(src, wx, wy, rotation, id, elScale) {
@@ -626,9 +723,12 @@ function addPhotoElement(src, wx, wy, rotation, id, elScale) {
 
     elementsLayer.appendChild(el);
 
-    if (!elements.find(e => e.id === id)) {
-        elements.push({ id, type: 'photo', x: wx, y: wy, src, rotation, elScale });
+    let item = elements.find(e => e.id === id);
+    if (!item) {
+        item = { id, type: 'photo', x: wx, y: wy, src, rotation, elScale };
+        elements.push(item);
     }
+    return item;
 }
 
 function addStickerElement(emoji, wx, wy, id, elScale) {
@@ -649,9 +749,12 @@ function addStickerElement(emoji, wx, wy, id, elScale) {
 
     elementsLayer.appendChild(el);
 
-    if (!elements.find(e => e.id === id)) {
-        elements.push({ id, type: 'sticker', x: wx, y: wy, sticker: emoji, elScale });
+    let item = elements.find(e => e.id === id);
+    if (!item) {
+        item = { id, type: 'sticker', x: wx, y: wy, sticker: emoji, elScale };
+        elements.push(item);
     }
+    return item;
 }
 
 // ============================================
@@ -661,6 +764,7 @@ function eraseElement(el) {
     const id = el.dataset.id;
     elements = elements.filter(e => e.id !== id);
     el.remove();
+    syncRemoveElement(id);
     saveState();
 }
 
@@ -748,6 +852,9 @@ function updateElementData(el) {
         item.x = parseFloat(el.dataset.worldX);
         item.y = parseFloat(el.dataset.worldY);
         item.elScale = parseFloat(el.dataset.elScale) || 1;
+        const rot = parseFloat(el.dataset.rotation);
+        if (!isNaN(rot)) item.rotation = rot;
+        syncUpdateElement(item);
     }
     saveState();
 }
@@ -758,7 +865,7 @@ function updateElementData(el) {
 canvas.addEventListener('mousedown', (e) => {
     if (stickerPlaceMode && selectedSticker) {
         const world = screenToWorld(e.clientX, e.clientY);
-        addStickerElement(selectedSticker, world.x, world.y);
+        syncPushElement(addStickerElement(selectedSticker, world.x, world.y));
         saveState();
         return;
     }
@@ -823,6 +930,7 @@ function endDrawing() {
     }
     if (isDrawing && currentStroke && currentStroke.points.length > 1) {
         drawingHistory.push(currentStroke);
+        syncPushStroke(currentStroke);
 
         if (!currentStroke.eraser) {
             // Merge live canvas into committed canvas
@@ -869,7 +977,7 @@ canvas.addEventListener('touchstart', (e) => {
     if (stickerPlaceMode && selectedSticker) {
         e.preventDefault();
         const world = screenToWorld(e.touches[0].clientX, e.touches[0].clientY);
-        addStickerElement(selectedSticker, world.x, world.y);
+        syncPushElement(addStickerElement(selectedSticker, world.x, world.y));
         saveState();
         return;
     }
@@ -985,7 +1093,7 @@ function showTextModal(wx, wy) {
     document.getElementById('textConfirm').onclick = () => {
         const text = textInput.value.trim();
         if (text) {
-            addTextElement(text, wx, wy, textColor, 24);
+            syncPushElement(addTextElement(text, wx, wy, textColor, 24));
             saveState();
         }
         textModal.classList.remove('active');
@@ -1098,7 +1206,7 @@ photoInput.addEventListener('change', (e) => {
     reader.onload = (ev) => {
         const rect = canvas.getBoundingClientRect();
         const cw = screenToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
-        addPhotoElement(ev.target.result, cw.x - 100, cw.y - 100, null);
+        syncPushElement(addPhotoElement(ev.target.result, cw.x - 100, cw.y - 100, null));
         saveState();
     };
     reader.readAsDataURL(file);
@@ -1171,7 +1279,8 @@ document.getElementById('zoomOut').addEventListener('click', () => zoomAtCenter(
 
 document.getElementById('undoBtn').addEventListener('click', () => {
     if (drawingHistory.length > 0) {
-        drawingHistory.pop();
+        const removed = drawingHistory.pop();
+        if (removed) syncRemoveStroke(removed.id);
         viewportDirty = true;
         saveState();
     }
@@ -1183,6 +1292,7 @@ document.getElementById('clearBtn').addEventListener('click', () => {
         elements = [];
         elementsLayer.innerHTML = '';
         viewportDirty = true;
+        syncClearBoard();
         saveState();
     }
 });
